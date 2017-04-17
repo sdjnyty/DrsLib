@@ -3,113 +3,116 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading.Tasks;
+using System.Linq;
 
 namespace YTY.DrsLib
 {
-  public class DrsFile : Dictionary<DrsTableClass, SortedDictionary<uint, byte[]>>
+  public sealed class DrsFile : Dictionary<DrsTableClass, SortedDictionary<int, byte[]>>
   {
-    private string fileName;
     private byte[] signature;
+    private static readonly Stack<int> stackPos = new Stack<int>();
 
-    public DrsFile() { }
+    private DrsFile() { }
 
-    public DrsFile Load(string fileName)
+    public static DrsFile Load(string fileName)
     {
-      var f = new DrsFile();
-      f.fileName = fileName;
-      try
+      var ret = new DrsFile();
+      using (var fs = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read))
       {
-        using (var fs = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var br = new BinaryReader(fs, Encoding.ASCII))
         {
-          using (var br = new BinaryReader(fs))
+          stackPos.Clear();
+          ret.signature = br.ReadBytes(56);
+          var numTables = br.ReadUInt32();
+          br.ReadUInt32();
+          for (var i = 0; i < numTables; i++)
           {
-            f.signature = br.ReadBytes(56);
-            var numTables = br.ReadUInt32();
-            var tables = new DrsTable[numTables];
-            br.ReadUInt32();
-            for (var i = 0; i < numTables; i++)
+            var entries = new SortedDictionary<int, byte[]>();
+            ret.Add((DrsTableClass)Array.IndexOf(TableClassSignatures, new string(br.ReadChars(4))), entries);
+            var offset = br.ReadInt32();
+            var numEntries = br.ReadInt32();
+            SavePositionAndSeek(fs, offset);
+            for (var j = 0; j < numEntries; j++)
             {
-              tables[i].DrsTableClass = GetDrsTableClass(br.ReadUInt32());
-              if (tables[i].DrsTableClass == DrsTableClass.Invalid)
-                throw new InvalidOperationException("bad drs table class");
-              try
-              {
-                Add(tables[i].DrsTableClass, new SortedDictionary<uint, byte[]>());
-              }
-              catch (ArgumentException) { throw new InvalidOperationException("drs table class repeat"); }
-              tables[i].Offset = br.ReadUInt32();
-              tables[i].NumEntries = br.ReadUInt32();
+              var id = br.ReadInt32();
+              var dataOffset = br.ReadInt32();
+              var size = br.ReadInt32();
+              SavePositionAndSeek(fs, dataOffset);
+              entries.Add(id, br.ReadBytes(size));
+              RestorePosition(fs);
             }
-            for (var i = 0; i < numTables; i++)
-            {
-              var entries = new DrsEntry[tables[i].NumEntries];
-              for (var j = 0; j < tables[i].NumEntries; j++)
-              {
-                entries[j].Id = br.ReadUInt32();
-                try
-                {
-                  this[tables[i].DrsTableClass].Add(tables[i].Entries[j].Id, null);
-                }
-                catch (ArgumentException) { throw new InvalidOperationException("entry id repeat"); }
-                entries[j].Offset = br.ReadUInt32();
-                entries[j].Size = br.ReadUInt32();
-              }
-              tables[i].Entries = entries;
-            }
-            for (var i = 0; i < numTables; i++)
-            {
-              for (var j = 0; j < tables[i].NumEntries; j++)
-              {
-                this[tables[i].DrsTableClass][tables[i].Entries[j].Id] = br.ReadBytes((int)tables[i].Entries[j].Size);
-              }
-            }
+            RestorePosition(fs);
           }
         }
       }
-      catch { throw; }
-      return f;
+      return ret;
     }
 
-    public void Save()
+    public void Save(string fileName)
     {
-
-    }
-
-    private DrsTableClass GetDrsTableClass(uint input)
-    {
-      switch (input)
+      using (var fs = new FileStream(fileName, FileMode.Create))
       {
-        case 0x62696e61: // 'bina'
-          return DrsTableClass.Bina;
-        case 0x73687020: // 'shp '
-          return DrsTableClass.Shp;
-        case 0x736c7020: // 'slp '
-          return DrsTableClass.Slp;
-        case 0x77617620: // 'wav '
-          return DrsTableClass.Wav;
+        using (var sw = new BinaryWriter(fs, Encoding.ASCII))
+        {
+          int pos;
+          var qTable = new Queue<int>(Count);
+          var qEntry = new Queue<int>(this.Sum(kv => kv.Value.Count));
+          sw.Write(signature);
+          sw.Write(Count);
+          foreach (var kvTable in this)
+          {
+            sw.Write(TableClassSignatures[(int)kvTable.Key].ToCharArray());
+            qTable.Enqueue((int)fs.Position);
+            sw.Write(kvTable.Value.Count);
+          }
+          foreach (var kvTable in this)
+          {
+            pos = (int)fs.Position;
+            sw.Seek(qTable.Dequeue(), SeekOrigin.Begin);
+            sw.Write(pos);
+            sw.Seek(pos, SeekOrigin.Begin);
+            foreach (var kvEntry in kvTable.Value)
+            {
+              sw.Write(kvEntry.Key);
+              qEntry.Enqueue((int)fs.Position);
+              sw.Write(kvEntry.Value.Length);
+            }
+          }
+          pos = (int)fs.Position;
+          sw.Seek(60, SeekOrigin.Begin);
+          sw.Write(pos);
+          sw.Seek(pos, SeekOrigin.Begin);
+          foreach (var kvTable in this)
+            foreach (var kvEntry in kvTable.Value)
+            {
+              pos = (int)fs.Position;
+              sw.Seek(qEntry.Dequeue(), SeekOrigin.Begin);
+              sw.Write(pos);
+              sw.Seek(pos, SeekOrigin.Begin);
+              sw.Write(kvEntry.Value);
+            }
+        }
       }
-      return DrsTableClass.Invalid;
     }
 
-    private struct DrsTable
+    private static void SavePositionAndSeek(Stream stream,int position)
     {
-      public DrsTableClass DrsTableClass;
-      public uint Offset;
-      public uint NumEntries;
-      public DrsEntry[] Entries;
+      stackPos.Push((int) stream.Position);
+      stream.Seek(position, SeekOrigin.Begin);
     }
 
-    private struct DrsEntry
+    private static int RestorePosition(Stream stream)
     {
-      public uint Id;
-      public uint Offset;
-      public uint Size;
+      var ret= stackPos.Pop();
+      stream.Seek(ret, SeekOrigin.Begin);
+      return ret;
     }
+
+    private static readonly string[] TableClassSignatures = { "anib", " phs", " pls", " vaw" };
   }
 
   public enum DrsTableClass
   {
-    Invalid,
     Bina,
     Shp,
     Slp,
