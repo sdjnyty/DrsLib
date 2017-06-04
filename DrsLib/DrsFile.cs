@@ -52,44 +52,47 @@ namespace YTY.DrsLib
     {
       using (var fs = new FileStream(fileName, FileMode.Create))
       {
-        using (var sw = new BinaryWriter(fs, Encoding.ASCII))
+        using (var bw = new BinaryWriter(fs, Encoding.ASCII))
         {
           int pos;
           var qTable = new Queue<int>(Count);
           var qEntry = new Queue<int>(this.Sum(kv => kv.Value.Count));
-          sw.Write(signature);
-          sw.Write(Count);
+          bw.Write(signature);
+          bw.Write(Count);
+          bw.Write(0);
           foreach (var kvTable in this)
           {
-            sw.Write(TableClassSignatures[(int)kvTable.Key].ToCharArray());
+            bw.Write(TableClassSignatures[(int)kvTable.Key].ToCharArray());
             qTable.Enqueue((int)fs.Position);
-            sw.Write(kvTable.Value.Count);
+            bw.Write(0);
+            bw.Write(kvTable.Value.Count);
           }
           foreach (var kvTable in this)
           {
             pos = (int)fs.Position;
-            sw.Seek(qTable.Dequeue(), SeekOrigin.Begin);
-            sw.Write(pos);
-            sw.Seek(pos, SeekOrigin.Begin);
+            bw.Seek(qTable.Dequeue(), SeekOrigin.Begin);
+            bw.Write(pos);
+            bw.Seek(pos, SeekOrigin.Begin);
             foreach (var kvEntry in kvTable.Value)
             {
-              sw.Write(kvEntry.Key);
+              bw.Write(kvEntry.Key);
               qEntry.Enqueue((int)fs.Position);
-              sw.Write(kvEntry.Value.Length);
+              bw.Write(0);
+              bw.Write(kvEntry.Value.Length);
             }
           }
           pos = (int)fs.Position;
-          sw.Seek(60, SeekOrigin.Begin);
-          sw.Write(pos);
-          sw.Seek(pos, SeekOrigin.Begin);
+          bw.Seek(60, SeekOrigin.Begin);
+          bw.Write(pos);
+          bw.Seek(pos, SeekOrigin.Begin);
           foreach (var kvTable in this)
             foreach (var kvEntry in kvTable.Value)
             {
               pos = (int)fs.Position;
-              sw.Seek(qEntry.Dequeue(), SeekOrigin.Begin);
-              sw.Write(pos);
-              sw.Seek(pos, SeekOrigin.Begin);
-              sw.Write(kvEntry.Value);
+              bw.Seek(qEntry.Dequeue(), SeekOrigin.Begin);
+              bw.Write(pos);
+              bw.Seek(pos, SeekOrigin.Begin);
+              bw.Write(kvEntry.Value);
             }
         }
       }
